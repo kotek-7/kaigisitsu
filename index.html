@@ -479,7 +479,7 @@
         const data = rows.map((row) => row.hours);
         labels.push("未予約（3h以上）", "未予約（3h未満）");
         data.push(globalFreeTotals.long, globalFreeTotals.short);
-        const colors = createColors(rows.length + 1);
+        const colors = createColors(rows.length);
 
         mainChart = new Chart(
           canvas,

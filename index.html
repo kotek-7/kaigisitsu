@@ -128,7 +128,7 @@
   <body>
     <h1>会議室予約割合</h1>
     <p class="muted">
-      対象期間内（9:00-21:00 の 12h/日）で利用可能な総時間に対する各団体の予約割合を表示します。空き時間は3時間以上と未満で区別されます。
+      対象期間内（9:00-21:00 の 12h/日）で利用可能な総時間に対する各団体の予約割合を表示します。空き時間は「3h未満」「3h以上（午前帯）」「3h以上（午後帯：12:00-21:00枠内で3h以上確保）」に分類しています。
     </p>
     <div id="period" class="muted"></div>
     <section id="controls">
@@ -177,7 +177,7 @@
     <section id="roomSection">
       <h2>会議室別チャート</h2>
       <p class="muted">
-        指定期間における各会議室の枠（12h/日）に対する団体別の予約・未予約割合です。空き時間は3h以上/未満で区別して表示します。
+        指定期間における各会議室の枠（12h/日）に対する団体別の予約・未予約割合です。空き時間は「3h未満」「3h以上（午前帯）」「3h以上（午後帯）」で色分けされています。
       </p>
       <div id="roomCharts" class="room-grid"></div>
     </section>
@@ -187,6 +187,7 @@
       const MS_PER_HOUR = 3600000;
       const DAY_START_HOUR = 9;
       const DAY_END_HOUR = 21;
+      const PRIME_START_HOUR = 12;
       const LONG_SLOT_THRESHOLD = 3; // hours
 
       const statusEl = document.getElementById("status");
@@ -266,8 +267,9 @@
           const hue = Math.round((360 * i) / Math.max(1, count));
           colors.push(`hsl(${hue}, 65%, 55%)`);
         }
-        colors.push("#808080"); // 未予約（短）
-        colors.push("#b0b0b0"); // 未予約（長）
+        colors.push("#b0b0b0"); // 未予約（3h未満）
+        colors.push("#808080"); // 未予約（3h以上/午前）
+        colors.push("#606060"); // 未予約（3h以上/午後）
         return colors;
       }
 
@@ -392,10 +394,21 @@
       function addFreeSlotTotals(slots, totals) {
         slots.forEach((slot) => {
           const durationHours = (slot.end - slot.start) / MS_PER_HOUR;
-          if (durationHours >= LONG_SLOT_THRESHOLD) {
-            totals.long += durationHours;
-          } else {
+          if (durationHours < LONG_SLOT_THRESHOLD) {
             totals.short += durationHours;
+            return;
+          }
+          const primeStart = new Date(slot.start);
+          primeStart.setHours(PRIME_START_HOUR, 0, 0, 0);
+          const primeEnd = new Date(slot.start);
+          primeEnd.setHours(DAY_END_HOUR, 0, 0, 0);
+          const overlapStart = slot.start > primeStart ? slot.start : primeStart;
+          const overlapEnd = slot.end < primeEnd ? slot.end : primeEnd;
+          const overlapHours = Math.max(0, (overlapEnd - overlapStart) / MS_PER_HOUR);
+          if (overlapHours >= LONG_SLOT_THRESHOLD) {
+            totals.longAfternoon += durationHours;
+          } else {
+            totals.longMorning += durationHours;
           }
         });
       }
@@ -405,7 +418,7 @@
         const orgHours = new Map();
         const roomBreakdown = new Map();
         let totalReserved = 0;
-        const globalFreeTotals = { long: 0, short: 0 };
+        const globalFreeTotals = { short: 0, longMorning: 0, longAfternoon: 0 };
 
         const numDays = computeDays(start, end);
         const dayList = Array.from({ length: numDays }, (_, idx) => {
@@ -417,7 +430,10 @@
 
         rooms.forEach((room) => {
           const roomMap = new Map();
-          roomBreakdown.set(room.room, { hours: roomMap, free: { long: 0, short: 0 } });
+          roomBreakdown.set(room.room, {
+            hours: roomMap,
+            free: { short: 0, longMorning: 0, longAfternoon: 0 },
+          });
           const entriesByDay = new Map();
 
           room.entries.forEach((entry) => {
@@ -454,7 +470,10 @@
 
         warningEl.textContent = "";
         warningEl.className = "";
-        const freeSum = globalFreeTotals.long + globalFreeTotals.short;
+        const freeSum =
+          globalFreeTotals.short +
+          globalFreeTotals.longMorning +
+          globalFreeTotals.longAfternoon;
         if (Math.abs(unreserved - freeSum) > 0.01) {
           warningEl.textContent =
             "警告: 空き時間計算と総枠の差分があります。データを確認してください。";
@@ -477,8 +496,16 @@
 
         const labels = rows.map((row) => row.title);
         const data = rows.map((row) => row.hours);
-        labels.push("未予約（3h未満）", "未予約（3h以上）");
-        data.push(globalFreeTotals.short, globalFreeTotals.long);
+        labels.push(
+          "未予約（3h未満）",
+          "未予約（3h以上・午前）",
+          "未予約（3h以上・午後）"
+        );
+        data.push(
+          globalFreeTotals.short,
+          globalFreeTotals.longMorning,
+          globalFreeTotals.longAfternoon
+        );
         const colors = createColors(rows.length);
 
         mainChart = new Chart(
@@ -494,8 +521,9 @@
             .map(([title, hours]) => ({ title, hours }))
             .sort((a, b) => b.hours - a.hours);
           const roomReserved = roomRows.reduce((sum, row) => sum + row.hours, 0);
-          const roomLongFree = breakdown.free.long;
           const roomShortFree = breakdown.free.short;
+          const roomLongMorningFree = breakdown.free.longMorning;
+          const roomLongAfternoonFree = breakdown.free.longAfternoon;
 
           const card = document.createElement("article");
           card.className = "room-card";
@@ -505,15 +533,28 @@
             <div class="room-summary">
               <span><strong>予約:</strong> ${formatter.format(roomReserved)}h</span>
               <span><strong>空き (3h未満):</strong> ${formatter.format(roomShortFree)}h</span>
-              <span><strong>空き (3h以上):</strong> ${formatter.format(roomLongFree)}h</span>
+              <span><strong>空き (3h以上・午前):</strong> ${formatter.format(
+                roomLongMorningFree
+              )}h</span>
+              <span><strong>空き (3h以上・午後):</strong> ${formatter.format(
+                roomLongAfternoonFree
+              )}h</span>
             </div>
           `;
           roomChartsContainer.appendChild(card);
 
           const roomLabels = roomRows.map((row) => row.title);
           const roomData = roomRows.map((row) => row.hours);
-          roomLabels.push("未予約（3h未満）", "未予約（3h以上）");
-          roomData.push(roomShortFree, roomLongFree);
+          roomLabels.push(
+            "未予約（3h未満）",
+            "未予約（3h以上・午前）",
+            "未予約（3h以上・午後）"
+          );
+          roomData.push(
+            roomShortFree,
+            roomLongMorningFree,
+            roomLongAfternoonFree
+          );
           const roomColors = createColors(roomRows.length);
 
           const ctx = card.querySelector("canvas");

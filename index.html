@@ -477,8 +477,8 @@
 
         const labels = rows.map((row) => row.title);
         const data = rows.map((row) => row.hours);
-        labels.push("未予約（3h以上）", "未予約（3h未満）");
-        data.push(globalFreeTotals.long, globalFreeTotals.short);
+        labels.push("未予約（3h未満）", "未予約（3h以上）");
+        data.push(globalFreeTotals.short, globalFreeTotals.long);
         const colors = createColors(rows.length);
 
         mainChart = new Chart(
@@ -512,8 +512,8 @@
 
           const roomLabels = roomRows.map((row) => row.title);
           const roomData = roomRows.map((row) => row.hours);
-          roomLabels.push("未予約（3h以上）", "未予約（3h未満）");
-          roomData.push(roomLongFree, roomShortFree);
+          roomLabels.push("未予約（3h未満）", "未予約（3h以上）");
+          roomData.push(roomShortFree, roomLongFree);
           const roomColors = createColors(roomRows.length + 1);
 
           const ctx = card.querySelector("canvas");

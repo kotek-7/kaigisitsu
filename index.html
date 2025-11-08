@@ -136,8 +136,8 @@
         <label>
           期間プリセット
           <select id="preset">
-            <option value="all" selected>全期間</option>
-            <option value="1m">最初の1ヶ月</option>
+            <option value="all">全期間</option>
+            <option value="1m" selected>最初の1ヶ月</option>
             <option value="2m">最初の2ヶ月</option>
             <option value="3m">最初の3ヶ月</option>
             <option value="custom">手動指定</option>
@@ -504,8 +504,8 @@
             <canvas aria-label="${room.room}" role="img"></canvas>
             <div class="room-summary">
               <span><strong>予約:</strong> ${formatter.format(roomReserved)}h</span>
-              <span><strong>空き (3h以上):</strong> ${formatter.format(roomLongFree)}h</span>
               <span><strong>空き (3h未満):</strong> ${formatter.format(roomShortFree)}h</span>
+              <span><strong>空き (3h以上):</strong> ${formatter.format(roomLongFree)}h</span>
             </div>
           `;
           roomChartsContainer.appendChild(card);
@@ -514,7 +514,7 @@
           const roomData = roomRows.map((row) => row.hours);
           roomLabels.push("未予約（3h未満）", "未予約（3h以上）");
           roomData.push(roomShortFree, roomLongFree);
-          const roomColors = createColors(roomRows.length + 1);
+          const roomColors = createColors(roomRows.length);
 
           const ctx = card.querySelector("canvas");
           const chart = new Chart(
@@ -632,7 +632,7 @@
             throw new Error("有効な日付を含む予約が見つかりません。");
           }
 
-          applyPreset("all");
+          applyPreset("1m");
           runFilter();
         } catch (err) {
           console.error(err);

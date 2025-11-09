@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>会議室予約割合ダッシュボード (新町学生会館)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+      }
+      body {
+        margin: 2rem auto;
+        max-width: 960px;
+        line-height: 1.6;
+        padding-inline: 1rem;
+      }
+      h1 {
+        margin-bottom: 0.3rem;
+      }
+      #period {
+        margin-bottom: 0.5rem;
+      }
+      #controls {
+        margin-bottom: 1.2rem;
+      }
+      #filterForm {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 0.8rem;
+        margin-bottom: 0.6rem;
+        align-items: end;
+      }
+      #filterForm label {
+        display: flex;
+        flex-direction: column;
+        font-size: 0.9rem;
+        gap: 0.3rem;
+      }
+      #filterForm input,
+      #filterForm select {
+        padding: 0.4rem;
+        font-size: 1rem;
+      }
+      #filterForm button {
+        padding: 0.45rem 0.8rem;
+        font-size: 1rem;
+        cursor: pointer;
+      }
+      #status {
+        padding: 0.6rem 1rem;
+        border-radius: 6px;
+        background: #f5f5f5;
+        color: #333;
+        margin-bottom: 1rem;
+      }
+      canvas {
+        max-width: 100%;
+        margin-block: 1.5rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1rem;
+        font-size: 0.95rem;
+      }
+      th,
+      td {
+        border-bottom: 1px solid #ccc;
+        padding: 0.35rem 0.6rem;
+        text-align: right;
+      }
+      th:first-child,
+      td:first-child {
+        text-align: left;
+      }
+      tfoot td {
+        font-weight: 600;
+      }
+      .muted {
+        color: #666;
+        font-size: 0.9rem;
+      }
+      .error {
+        background: #fbe9e7;
+        color: #b71c1c;
+      }
+      .warning {
+        background: #fff3cd;
+        color: #7a5800;
+      }
+      .info {
+        background: #e7f3fe;
+        color: #0a5275;
+      }
+      #roomSection {
+        margin-top: 2.5rem;
+      }
+      .room-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 1rem;
+      }
+      .room-card {
+        border: 1px solid #d0d0d0;
+        border-radius: 8px;
+        padding: 1rem;
+        background: #fff;
+      }
+      .room-card h3 {
+        margin-top: 0;
+        font-size: 1rem;
+      }
+      .room-summary {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        font-size: 0.9rem;
+        color: #555;
+      }
+      .room-summary span strong {
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>会議室予約割合 (新町学生会館)</h1>
+    <p class="muted">
+      対象期間内（9:00-21:00 の 12h/日）で利用可能な総時間に対する各団体の予約割合を表示します。空き時間は「3h未満」「3h以上（午前帯）」「3h以上（午後帯：12:00-21:00枠内で3h以上確保）」に分類しています。
+    </p>
+    <div id="period" class="muted"></div>
+    <section id="controls">
+      <form id="filterForm">
+        <label>
+          期間プリセット
+          <select id="preset">
+            <option value="all">全期間</option>
+            <option value="1m" selected>最初の1ヶ月</option>
+            <option value="2m">最初の2ヶ月</option>
+            <option value="3m">最初の3ヶ月</option>
+            <option value="custom">手動指定</option>
+          </select>
+        </label>
+        <label>
+          開始日
+          <input type="date" id="startDate" />
+        </label>
+        <label>
+          終了日
+          <input type="date" id="endDate" />
+        </label>
+        <button type="submit">適用</button>
+      </form>
+      <div id="status" class="info">データ読み込み中…</div>
+    </section>
+    <canvas id="shareChart" height="160"></canvas>
+    <div id="warning"></div>
+    <table id="ratioTable">
+      <thead>
+        <tr>
+          <th>団体名</th>
+          <th>予約時間 (h)</th>
+          <th>総枠比 (%)</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+      <tfoot>
+        <tr>
+          <td>合計（予約済）</td>
+          <td id="totalHours">-</td>
+          <td id="totalRatio">-</td>
+        </tr>
+      </tfoot>
+    </table>
+    <section id="roomSection">
+      <h2>会議室別チャート</h2>
+      <p class="muted">
+        指定期間における各会議室の枠（12h/日）に対する団体別の予約・未予約割合です。空き時間は「3h未満」「3h以上（午前帯）」「3h以上（午後帯）」で色分けされています。
+      </p>
+      <div id="roomCharts" class="room-grid"></div>
+    </section>
+
+    <script>
+      const HOURS_PER_DAY = 12; // 9:00-21:00
+      const MS_PER_HOUR = 3600000;
+      const DAY_START_HOUR = 9;
+      const DAY_END_HOUR = 21;
+      const PRIME_START_HOUR = 12;
+      const LONG_SLOT_THRESHOLD = 3; // hours
+
+      const statusEl = document.getElementById("status");
+      const periodEl = document.getElementById("period");
+      const warningEl = document.getElementById("warning");
+      const tableBody = document.querySelector("#ratioTable tbody");
+      const totalHoursEl = document.getElementById("totalHours");
+      const totalRatioEl = document.getElementById("totalRatio");
+      const canvas = document.getElementById("shareChart");
+      const roomChartsContainer = document.getElementById("roomCharts");
+      const presetSelect = document.getElementById("preset");
+      const startInput = document.getElementById("startDate");
+      const endInput = document.getElementById("endDate");
+      const filterForm = document.getElementById("filterForm");
+
+      const formatter = new Intl.NumberFormat("ja-JP", {
+        maximumFractionDigits: 1,
+      });
+
+      let allRooms = [];
+      let minDate = null;
+      let maxDate = null;
+      let mainChart = null;
+      const roomCharts = [];
+
+      function parseEntry(entry) {
+        const pattern =
+          /(\d{4})年(\d{2})月(\d{2})日\s+(\d{2}):(\d{2})-(\d{2}):(\d{2})/;
+        const match = entry.date.match(pattern);
+        if (!match) {
+          throw new Error(`日付形式を解析できません: ${entry.date}`);
+        }
+        const [
+          ,
+          year,
+          month,
+          day,
+          startHour,
+          startMinute,
+          endHour,
+          endMinute,
+        ] = match.map(Number);
+        const start = new Date(
+          year,
+          month - 1,
+          day,
+          startHour,
+          startMinute || 0
+        );
+        const end = new Date(year, month - 1, day, endHour, endMinute || 0);
+        if (end <= start) {
+          throw new Error(`終了時刻が開始以前です: ${entry.date}`);
+        }
+        const dayStart = new Date(year, month - 1, day);
+        return { start, end, dayStart };
+      }
+
+      function getParsed(entry) {
+        if (!entry.__parsed) {
+          entry.__parsed = parseEntry(entry);
+        }
+        return entry.__parsed;
+      }
+
+      function formatDateRange(minDate, maxDate) {
+        const format = (d) =>
+          `${d.getFullYear()}年${String(d.getMonth() + 1).padStart(
+            2,
+            "0"
+          )}月${String(d.getDate()).padStart(2, "0")}日`;
+        return `${format(minDate)} 〜 ${format(maxDate)}`;
+      }
+
+      function createColors(count) {
+        const colors = [];
+        for (let i = 0; i < count; i += 1) {
+          const hue = Math.round((360 * i) / Math.max(1, count));
+          colors.push(`hsl(${hue}, 65%, 55%)`);
+        }
+        colors.push("#b0b0b0"); // 未予約（3h未満）
+        colors.push("#808080"); // 未予約（3h以上/午前）
+        colors.push("#606060"); // 未予約（3h以上/午後）
+        return colors;
+      }
+
+      function buildChartConfig(labels, data, colors, totalCapacityHours) {
+        return {
+          type: "doughnut",
+          data: {
+            labels,
+            datasets: [
+              {
+                data,
+                backgroundColor: colors,
+                borderWidth: 1,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: {
+                position: "right",
+              },
+              tooltip: {
+                callbacks: {
+                  label: (context) => {
+                    const hours = context.parsed;
+                    const ratio = totalCapacityHours
+                      ? (hours / totalCapacityHours) * 100
+                      : 0;
+                    return `${context.label}: ${formatter.format(
+                      hours
+                    )}h (${formatter.format(ratio)}%)`;
+                  },
+                },
+              },
+            },
+          },
+        };
+      }
+
+      function renderTable(rows, totalCapacityHours, totalReservedHours) {
+        tableBody.innerHTML = "";
+        rows.forEach((row) => {
+          const tr = document.createElement("tr");
+          const ratio = totalCapacityHours
+            ? (row.hours / totalCapacityHours) * 100
+            : 0;
+          tr.innerHTML = `
+            <td>${row.title}</td>
+            <td>${formatter.format(row.hours)}</td>
+            <td>${formatter.format(ratio)}</td>
+          `;
+          tableBody.appendChild(tr);
+        });
+
+        const totalRatio = totalCapacityHours
+          ? (totalReservedHours / totalCapacityHours) * 100
+          : 0;
+        totalHoursEl.textContent = formatter.format(totalReservedHours);
+        totalRatioEl.textContent = formatter.format(totalRatio);
+      }
+
+      function cleanupCharts() {
+        if (mainChart) {
+          mainChart.destroy();
+          mainChart = null;
+        }
+        while (roomCharts.length) {
+          roomCharts.pop().destroy();
+        }
+      }
+
+      function computeDays(start, end) {
+        return Math.floor((end - start) / (24 * MS_PER_HOUR)) + 1;
+      }
+
+      function filterEntries(rooms, start, end) {
+        return rooms.map((room) => ({
+          room: room.room,
+          entries: (room.entries || []).filter((entry) => {
+            const { dayStart } = getParsed(entry);
+            return dayStart >= start && dayStart <= end;
+          }),
+        }));
+      }
+
+      function computeFreeSlots(entries, dayReference) {
+        const dayStart = new Date(dayReference);
+        dayStart.setHours(DAY_START_HOUR, 0, 0, 0);
+        const dayEnd = new Date(dayReference);
+        dayEnd.setHours(DAY_END_HOUR, 0, 0, 0);
+        if (!entries.length) {
+          return [{ start: dayStart, end: dayEnd }];
+        }
+        const sorted = entries
+          .map((entry) => getParsed(entry))
+          .sort((a, b) => a.start - b.start);
+        const freeSlots = [];
+        let cursor = new Date(dayStart);
+
+        sorted.forEach(({ start, end }) => {
+          const clampedStart = start < dayStart ? new Date(dayStart) : start;
+          const clampedEnd = end > dayEnd ? new Date(dayEnd) : end;
+          if (clampedStart > cursor) {
+            freeSlots.push({
+              start: new Date(cursor),
+              end: new Date(clampedStart),
+            });
+          }
+          if (clampedEnd > cursor) {
+            cursor = new Date(clampedEnd);
+          }
+        });
+
+        if (cursor < dayEnd) {
+          freeSlots.push({ start: new Date(cursor), end: new Date(dayEnd) });
+        }
+
+        return freeSlots;
+      }
+
+      function addFreeSlotTotals(slots, totals) {
+        slots.forEach((slot) => {
+          const durationHours = (slot.end - slot.start) / MS_PER_HOUR;
+          if (durationHours < LONG_SLOT_THRESHOLD) {
+            totals.short += durationHours;
+            return;
+          }
+          const primeStart = new Date(slot.start);
+          primeStart.setHours(PRIME_START_HOUR, 0, 0, 0);
+          const primeEnd = new Date(slot.start);
+          primeEnd.setHours(DAY_END_HOUR, 0, 0, 0);
+          const overlapStart = slot.start > primeStart ? slot.start : primeStart;
+          const overlapEnd = slot.end < primeEnd ? slot.end : primeEnd;
+          const overlapHours = Math.max(0, (overlapEnd - overlapStart) / MS_PER_HOUR);
+          if (overlapHours >= LONG_SLOT_THRESHOLD) {
+            totals.longAfternoon += durationHours;
+          } else {
+            totals.longMorning += durationHours;
+          }
+        });
+      }
+
+      function renderDashboard(rooms, start, end) {
+        cleanupCharts();
+        const orgHours = new Map();
+        const roomBreakdown = new Map();
+        let totalReserved = 0;
+        const globalFreeTotals = { short: 0, longMorning: 0, longAfternoon: 0 };
+
+        const numDays = computeDays(start, end);
+        const dayList = Array.from({ length: numDays }, (_, idx) => {
+          const day = new Date(start);
+          day.setDate(start.getDate() + idx);
+          day.setHours(0, 0, 0, 0);
+          return day;
+        });
+
+        rooms.forEach((room) => {
+          const roomMap = new Map();
+          roomBreakdown.set(room.room, {
+            hours: roomMap,
+            free: { short: 0, longMorning: 0, longAfternoon: 0 },
+          });
+          const entriesByDay = new Map();
+
+          room.entries.forEach((entry) => {
+            const parsed = getParsed(entry);
+            const durationHours = (parsed.end - parsed.start) / MS_PER_HOUR;
+            totalReserved += durationHours;
+            orgHours.set(
+              entry.title,
+              (orgHours.get(entry.title) || 0) + durationHours
+            );
+            roomMap.set(
+              entry.title,
+              (roomMap.get(entry.title) || 0) + durationHours
+            );
+            const dayKey = parsed.dayStart.toISOString();
+            if (!entriesByDay.has(dayKey)) {
+              entriesByDay.set(dayKey, []);
+            }
+            entriesByDay.get(dayKey).push(entry);
+          });
+
+          dayList.forEach((day) => {
+            const key = day.toISOString();
+            const dayEntries = entriesByDay.get(key) || [];
+            const freeSlots = computeFreeSlots(dayEntries, day);
+            addFreeSlotTotals(freeSlots, roomBreakdown.get(room.room).free);
+            addFreeSlotTotals(freeSlots, globalFreeTotals);
+          });
+        });
+
+        const roomCount = rooms.length;
+        const totalCapacityHours = roomCount * numDays * HOURS_PER_DAY;
+        let unreserved = Math.max(0, totalCapacityHours - totalReserved);
+
+        warningEl.textContent = "";
+        warningEl.className = "";
+        const freeSum =
+          globalFreeTotals.short +
+          globalFreeTotals.longMorning +
+          globalFreeTotals.longAfternoon;
+        if (Math.abs(unreserved - freeSum) > 0.01) {
+          warningEl.textContent =
+            "警告: 空き時間計算と総枠の差分があります。データを確認してください。";
+          warningEl.className = "warning";
+        } else {
+          unreserved = freeSum;
+        }
+
+        const rows = Array.from(orgHours.entries())
+          .map(([title, hours]) => ({ title, hours }))
+          .sort((a, b) => b.hours - a.hours);
+
+        renderTable(rows, totalCapacityHours, totalReserved);
+        periodEl.textContent = `対象期間: ${formatDateRange(
+          start,
+          end
+        )} / 会議室数: ${roomCount} / 日次枠: ${HOURS_PER_DAY}h (合計 ${numDays}日)`;
+        statusEl.textContent = "データ更新済み";
+        statusEl.className = "info";
+
+        const labels = rows.map((row) => row.title);
+        const data = rows.map((row) => row.hours);
+        labels.push(
+          "未予約（3h未満）",
+          "未予約（3h以上・午前）",
+          "未予約（3h以上・午後）"
+        );
+        data.push(
+          globalFreeTotals.short,
+          globalFreeTotals.longMorning,
+          globalFreeTotals.longAfternoon
+        );
+        const colors = createColors(rows.length);
+
+        mainChart = new Chart(
+          canvas,
+          buildChartConfig(labels, data, colors, totalCapacityHours)
+        );
+
+        roomChartsContainer.innerHTML = "";
+        const roomCapacity = numDays * HOURS_PER_DAY;
+        rooms.forEach((room) => {
+          const breakdown = roomBreakdown.get(room.room);
+          const roomRows = Array.from((breakdown.hours || new Map()).entries())
+            .map(([title, hours]) => ({ title, hours }))
+            .sort((a, b) => b.hours - a.hours);
+          const roomReserved = roomRows.reduce((sum, row) => sum + row.hours, 0);
+          const roomShortFree = breakdown.free.short;
+          const roomLongMorningFree = breakdown.free.longMorning;
+          const roomLongAfternoonFree = breakdown.free.longAfternoon;
+
+          const card = document.createElement("article");
+          card.className = "room-card";
+          card.innerHTML = `
+            <h3>${room.room}</h3>
+            <canvas aria-label="${room.room}" role="img"></canvas>
+            <div class="room-summary">
+              <span><strong>予約:</strong> ${formatter.format(roomReserved)}h</span>
+              <span><strong>空き (3h未満):</strong> ${formatter.format(roomShortFree)}h</span>
+              <span><strong>空き (3h以上・午前):</strong> ${formatter.format(
+                roomLongMorningFree
+              )}h</span>
+              <span><strong>空き (3h以上・午後):</strong> ${formatter.format(
+                roomLongAfternoonFree
+              )}h</span>
+            </div>
+          `;
+          roomChartsContainer.appendChild(card);
+
+          const roomLabels = roomRows.map((row) => row.title);
+          const roomData = roomRows.map((row) => row.hours);
+          roomLabels.push(
+            "未予約（3h未満）",
+            "未予約（3h以上・午前）",
+            "未予約（3h以上・午後）"
+          );
+          roomData.push(
+            roomShortFree,
+            roomLongMorningFree,
+            roomLongAfternoonFree
+          );
+          const roomColors = createColors(roomRows.length);
+
+          const ctx = card.querySelector("canvas");
+          const chart = new Chart(
+            ctx,
+            buildChartConfig(roomLabels, roomData, roomColors, roomCapacity)
+          );
+          roomCharts.push(chart);
+        });
+      }
+
+      function formatInputDate(date) {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, "0");
+        const d = String(date.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+      }
+
+      function parseInputDate(value) {
+        if (!value) return null;
+        const [year, month, day] = value.split("-").map(Number);
+        if (!year || !month || !day) return null;
+        return new Date(year, month - 1, day);
+      }
+
+      function applyPreset(value) {
+        presetSelect.value = value;
+        if (!minDate || !maxDate) return;
+        if (value === "custom") return;
+        let start = new Date(minDate);
+        let end = new Date(maxDate);
+        if (value !== "all") {
+          const months = parseInt(value, 10);
+          const presetEnd = new Date(start);
+          presetEnd.setMonth(presetEnd.getMonth() + months);
+          presetEnd.setDate(presetEnd.getDate() - 1);
+          if (presetEnd < start) {
+            presetEnd.setTime(start.getTime());
+          }
+          if (presetEnd > maxDate) {
+            presetEnd.setTime(maxDate.getTime());
+          }
+          end = presetEnd;
+        }
+        startInput.value = formatInputDate(start);
+        endInput.value = formatInputDate(end);
+      }
+
+      function runFilter() {
+        const start = parseInputDate(startInput.value);
+        const end = parseInputDate(endInput.value);
+        if (!start || !end) {
+          statusEl.textContent = "開始日と終了日を指定してください";
+          statusEl.className = "error";
+          return;
+        }
+        if (end < start) {
+          statusEl.textContent = "終了日は開始日以降に設定してください";
+          statusEl.className = "error";
+          return;
+        }
+        if (end < minDate || start > maxDate) {
+          statusEl.textContent = "指定期間に該当するデータがありません";
+          statusEl.className = "warning";
+          return;
+        }
+        const clampedStart = start < minDate ? new Date(minDate) : start;
+        const clampedEnd = end > maxDate ? new Date(maxDate) : end;
+          const filtered = filterEntries(allRooms, clampedStart, clampedEnd);
+          renderDashboard(filtered, clampedStart, clampedEnd);
+      }
+
+      filterForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        runFilter();
+      });
+
+      presetSelect.addEventListener("change", (event) => {
+        applyPreset(event.target.value);
+        if (event.target.value !== "custom") {
+          runFilter();
+        }
+      });
+
+      [startInput, endInput].forEach((input) => {
+        input.addEventListener("input", () => {
+          presetSelect.value = "custom";
+        });
+      });
+
+      async function init() {
+        try {
+          const res = await fetch("reserves_real.json");
+          if (!res.ok) {
+            throw new Error(`reserves_real.json を取得できません (HTTP ${res.status})`);
+          }
+          const rooms = await res.json();
+          if (!Array.isArray(rooms) || rooms.length === 0) {
+            throw new Error("予約データが空です。");
+          }
+          allRooms = rooms;
+
+          rooms.forEach((room) => {
+            (room.entries || []).forEach((entry) => {
+              const { dayStart } = getParsed(entry);
+              if (!minDate || dayStart < minDate) {
+                minDate = new Date(dayStart);
+              }
+              if (!maxDate || dayStart > maxDate) {
+                maxDate = new Date(dayStart);
+              }
+            });
+          });
+
+          if (!minDate || !maxDate) {
+            throw new Error("有効な日付を含む予約が見つかりません。");
+          }
+
+          applyPreset("1m");
+          runFilter();
+        } catch (err) {
+          console.error(err);
+          statusEl.textContent = `エラー: ${err.message}`;
+          statusEl.className = "error";
+        }
+      }
+
+      init();
+    </script>
+  </body>
+</html>
